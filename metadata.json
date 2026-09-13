@@ -1,0 +1,6 @@
+{
+  "name": "AegisAI – AI-Powered Engineering Service Reliability Platform",
+  "description": "Production engineering operations platform for service monitoring, incident management, Gemini AI root-cause analysis, and troubleshooting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
