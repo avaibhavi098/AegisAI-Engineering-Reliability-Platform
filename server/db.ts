@@ -18,7 +18,7 @@ import type {
   Severity,
   ServiceStatus,
 } from '../src/types/index.js';
-import { hashPassword, generateSalt } from './auth.js';
+import { hashPassword, generateSalt, verifyPassword } from './auth.js';
 
 export interface StoredUser {
   id: string;
@@ -338,6 +338,20 @@ class DatabaseManager {
     const userCount = (this.db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number }).count;
     if (userCount === 0) {
       this.seedUsers();
+    } else {
+      // Ensure seeded demo user credentials remain valid with the canonical demo password
+      for (const email of ['admin@aegis.internal', 'engineer@aegis.internal', 'viewer@aegis.internal']) {
+        const user = this.getUserByEmail(email);
+        if (user && user.isDemo) {
+          const matchesCanonical = verifyPassword('AegisSec2026!', user.salt, user.passwordHash);
+          const matchesEnv = process.env.DEMO_USER_PASSWORD ? verifyPassword(process.env.DEMO_USER_PASSWORD, user.salt, user.passwordHash) : false;
+          if (!matchesCanonical && !matchesEnv) {
+            const salt = generateSalt();
+            const hash = hashPassword('AegisSec2026!', salt);
+            this.updateUserPassword(user.id, hash, salt);
+          }
+        }
+      }
     }
 
     const engineerCount = (this.db.prepare('SELECT COUNT(*) as count FROM engineers').get() as { count: number }).count;
@@ -865,6 +879,11 @@ class DatabaseManager {
   public recordUserLogin(userId: string): void {
     const now = new Date().toISOString();
     this.db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').run(now, now, userId);
+  }
+
+  public updateUserPassword(userId: string, passwordHash: string, salt: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare('UPDATE users SET password_hash = ?, salt = ?, updated_at = ? WHERE id = ?').run(passwordHash, salt, now, userId);
   }
 
   // --- Session Management ---
