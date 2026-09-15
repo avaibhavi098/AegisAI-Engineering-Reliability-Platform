@@ -180,7 +180,7 @@ class TelemetryMonitor {
     };
   }
 
-  public checkDatabaseHealth(): {
+  public async checkDatabaseHealth(): Promise<{
     status: ComponentHealthStatus;
     latencyMs: number;
     connected: boolean;
@@ -188,21 +188,22 @@ class TelemetryMonitor {
     totalTables: number;
     checkedAt: string;
     details?: string;
-  } {
+  }> {
     const start = process.hrtime.bigint();
     const checkedAt = new Date().toISOString();
+    const engineType = db.getEngineName();
 
     try {
-      const result = db.pingDatabase();
+      const result = await db.pingDatabase();
       const end = process.hrtime.bigint();
       const latencyMs = Math.round((Number(end - start) / 1_000_000) * 100) / 100;
 
-      const isHealthy = result.connected && latencyMs < 250;
+      const isHealthy = result.connected && latencyMs < 1000;
       return {
         status: isHealthy ? 'HEALTHY' : 'DEGRADED',
         latencyMs,
         connected: result.connected,
-        type: 'SQLite (node:sqlite)',
+        type: engineType,
         totalTables: result.totalTables,
         checkedAt,
         details: isHealthy ? 'Database responsive' : 'Database query latency elevated',
@@ -214,7 +215,7 @@ class TelemetryMonitor {
         status: 'DOWN',
         latencyMs,
         connected: false,
-        type: 'SQLite (node:sqlite)',
+        type: engineType,
         totalTables: 0,
         checkedAt,
         details: sanitizeErrorMessage(err),
@@ -222,16 +223,16 @@ class TelemetryMonitor {
     }
   }
 
-  public checkGeminiAiHealth(): {
+  public async checkGeminiAiHealth(): Promise<{
     status: ComponentHealthStatus;
     configured: boolean;
     model: string;
     latencyMs?: number;
     checkedAt: string;
     message: string;
-  } {
+  }> {
     const checkedAt = new Date().toISOString();
-    const settings = db.getSettings();
+    const settings = await db.getSettings();
     const model = settings.geminiModel || 'gemini-3.8-flash';
     const apiKey = process.env.GEMINI_API_KEY;
 
@@ -272,7 +273,7 @@ class TelemetryMonitor {
     message: string;
   }> {
     const checkedAt = new Date().toISOString();
-    const settings = db.getSettings();
+    const settings = await db.getSettings();
     const model = settings.geminiModel || 'gemini-3.8-flash';
     const apiKey = process.env.GEMINI_API_KEY;
 
@@ -363,10 +364,10 @@ class TelemetryMonitor {
     }
   }
 
-  public getSystemHealthReport(): SystemHealthReport {
+  public async getSystemHealthReport(): Promise<SystemHealthReport> {
     const apiPerf = this.getApiPerformance();
-    const dbHealth = this.checkDatabaseHealth();
-    const aiHealth = this.checkGeminiAiHealth();
+    const dbHealth = await this.checkDatabaseHealth();
+    const aiHealth = await this.checkGeminiAiHealth();
     const checkedAt = new Date().toISOString();
 
     const memUsage = process.memoryUsage();

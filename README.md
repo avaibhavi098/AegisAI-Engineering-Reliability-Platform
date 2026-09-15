@@ -466,18 +466,19 @@ npm test
 
 ## Environment Variables
 
-Configure environment variables in a `.env` file or provide them via your container deployment environment:
+Configure environment variables in a `.env` file or provide them via your container deployment environment / cloud secrets:
 
 | Variable Name | Required | Default Value | Description |
 |---|:---:|:---:|---|
+| `DATABASE_URL` | **Yes** (in production) | *None* | PostgreSQL connection string (e.g. `postgresql://user:pass@host:5432/db?sslmode=require`) |
 | `GEMINI_API_KEY` | **Yes** (for AI) | *None* | Google Gemini API key for AI root-cause analysis and log diagnostics |
 | `APP_URL` | Optional | `http://localhost:3000` | Hosted application base URL |
 | `PORT` | Optional | `3000` | Port for the Node.js Express server |
 | `NODE_ENV` | Optional | `development` | Runtime environment (`production`, `development`, `test`) |
-| `DATABASE_PATH` | Optional | `./data/aegis.sqlite` | File path to the SQLite persistence database |
+| `DATABASE_PATH` | Optional | `./data/aegisai.db` | File path to local SQLite database (used only in development when `DATABASE_URL` is omitted) |
 | `DEMO_USER_PASSWORD`| Optional | `AegisSec2026!` | Initial password used when seeding default demo accounts |
 
-*Refer to `.env.example` for a clean template containing variable names.*
+*Refer to `.env.example` for a clean template containing placeholder variable definitions.*
 
 ---
 
@@ -504,6 +505,7 @@ Configure environment variables in a `.env` file or provide them via your contai
    ```bash
    cp .env.example .env
    # Edit .env and supply your GEMINI_API_KEY from https://aistudio.google.com/
+   # Supply DATABASE_URL for PostgreSQL or leave blank to use local SQLite in dev
    ```
 
 4. **Run the test suite**:
@@ -549,9 +551,10 @@ AegisAI compiles the frontend into static assets and bundles the Express backend
 ### Container & Cloud Run Deployment
 The application is pre-configured for containerized platforms such as Google Cloud Run:
 - The server binds to `0.0.0.0` on port `3000`.
-- Health probes are accessible at `/api/health` and `/api/health/ready`.
+- Health probes are accessible at `/api/health`.
+- In production (`NODE_ENV=production`), `DATABASE_URL` is **strictly required** and connects to enterprise PostgreSQL with automatic schema migration and pooling.
 - Ensure the `GEMINI_API_KEY` secret is injected into the container environment.
-- For persistent state across container restarts, mount a persistent volume at `/data` or point `DATABASE_PATH` to a mounted volume.
+- SQLite fallback is strictly restricted to development environments and is blocked in production.
 
 ---
 
@@ -559,20 +562,22 @@ The application is pre-configured for containerized platforms such as Google Clo
 
 1. **No Client-Side Secrets**:
    The Gemini API key is strictly managed on the server side via `process.env.GEMINI_API_KEY`. It is never bundled into frontend assets or sent over the wire.
-2. **Credential Sanitization**:
+2. **Credential Sanitization & Injection Prevention**:
    Error handling middleware strips all API keys, authorization tokens, passwords, and server file paths using `sanitizeErrorMessage()` before logging or returning error responses.
-3. **Password Security**:
+3. **Database Security & Secrets Management**:
+   `DATABASE_URL` is sourced exclusively from environment variables / secret managers. No database credentials are committed to Git or hardcoded in templates.
+4. **Password Security**:
    Passwords are never stored in plaintext. They are salted with 16 random bytes and hashed using PBKDF2 with 100,000 iterations.
-4. **Input Validation**:
-   All mutation endpoints validate request payloads against strict type, length, and enum constraints (`server/validation.ts`) to prevent malformed requests and unexpected data corruption.
-5. **Git Hygiene**:
-   `.gitignore` comprehensively excludes all `.env` files, SQLite database files (`data/`, `*.sqlite`, `*.db`), build artifacts (`dist/`, `build/`), logs, and editor caches.
+5. **Input Validation & RBAC**:
+   All mutation endpoints validate request payloads against strict type, length, and enum constraints (`server/validation.ts`) to prevent malformed requests and unexpected data corruption. Strict RBAC middleware enforces ADMIN, ENGINEER, and VIEWER permissions.
+6. **Git Hygiene**:
+   `.gitignore` comprehensively excludes all `.env` files, database binaries (`data/`, `*.sqlite`, `*.db`), build artifacts (`dist/`, `build/`), logs, and editor caches.
 
 ---
 
 ## Known Limitations
 
-- **Single-Node Persistence**: AegisAI uses native SQLite with Write-Ahead Logging, which is optimized for single-node deployments. For multi-region, active-active horizontal scaling, migrate the database layer to an external PostgreSQL or Cloud SQL database.
+- **Production Persistence**: In production (`NODE_ENV=production`), AegisAI enforces PostgreSQL for high availability, transactional consistency, and horizontal clustering. SQLite is restricted strictly to local developer sandboxes.
 - **AI Connectivity**: Gemini root-cause analysis requires egress network access to Google AI APIs. If the API key is absent or network is unavailable, the application gracefully degrades with clear UI status indicators.
 
 ---

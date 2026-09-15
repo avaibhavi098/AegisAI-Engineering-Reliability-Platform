@@ -32,15 +32,15 @@ apiRouter.use((req: Request, res: Response, next: NextFunction) => {
 apiRouter.use(telemetryMonitor.middleware);
 
 // --- Structured System Health Check Endpoint ---
-apiRouter.get('/health', (req: Request, res: Response) => {
-  const healthReport = telemetryMonitor.getSystemHealthReport();
+apiRouter.get('/health', async (req: Request, res: Response) => {
+  const healthReport = await telemetryMonitor.getSystemHealthReport();
   const isDown = healthReport.checks.database.status === 'DOWN';
   const statusCode = isDown ? 503 : 200;
 
   res.status(statusCode).json({
     status: isDown ? 'down' : (healthReport.status === 'down' ? 'degraded' : 'ok'),
     service: 'AegisAI',
-    persistence: 'SQLite (node:sqlite)',
+    persistence: db.getEngineName(),
     systemStatus: healthReport.systemStatus,
     timestamp: healthReport.timestamp,
     uptimeSeconds: healthReport.uptimeSeconds,
@@ -49,7 +49,7 @@ apiRouter.get('/health', (req: Request, res: Response) => {
 });
 
 // --- Authentication & Session Management ---
-apiRouter.post('/auth/signup', (req: Request, res: Response) => {
+apiRouter.post('/auth/signup', async (req: Request, res: Response) => {
   const validation = validateSignup(req.body);
   if (!validation.valid) {
     return res.status(400).json({ error: validation.errors.join('. ') });
@@ -57,7 +57,7 @@ apiRouter.post('/auth/signup', (req: Request, res: Response) => {
 
   const { name, email, password, role, title } = req.body;
   const cleanEmail = email.toLowerCase().trim();
-  const existing = db.getUserByEmail(cleanEmail);
+  const existing = await db.getUserByEmail(cleanEmail);
   if (existing) {
     return res.status(409).json({ error: 'An account with this email already exists' });
   }
@@ -67,7 +67,7 @@ apiRouter.post('/auth/signup', (req: Request, res: Response) => {
     const passwordHash = hashPassword(password, salt);
     const assignedRole: UserRole = role && ['ADMIN', 'ENGINEER', 'VIEWER'].includes(role) ? role : 'ENGINEER';
 
-    const newUser = db.createUser({
+    const newUser = await db.createUser({
       name: sanitizeText(name, 100),
       email: cleanEmail,
       role: assignedRole,
@@ -77,10 +77,10 @@ apiRouter.post('/auth/signup', (req: Request, res: Response) => {
     });
 
     const token = generateSessionToken();
-    db.createSession(newUser.id, token);
-    db.recordUserLogin(newUser.id);
+    await db.createSession(newUser.id, token);
+    await db.recordUserLogin(newUser.id);
 
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: newUser.id,
       userName: newUser.name,
       userRole: newUser.role,
@@ -109,7 +109,7 @@ apiRouter.post('/auth/signup', (req: Request, res: Response) => {
   }
 });
 
-apiRouter.post('/auth/login', (req: Request, res: Response) => {
+apiRouter.post('/auth/login', async (req: Request, res: Response) => {
   const validation = validateLogin(req.body);
   if (!validation.valid) {
     return res.status(400).json({ error: validation.errors.join('. ') });
@@ -117,7 +117,7 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
 
   const { email, password } = req.body;
   const cleanEmail = email.toLowerCase().trim();
-  const user = db.getUserByEmail(cleanEmail);
+  const user = await db.getUserByEmail(cleanEmail);
   if (!user) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
@@ -128,7 +128,7 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
       isValid = true;
       const newSalt = generateSalt();
       const newHash = hashPassword(password, newSalt);
-      db.updateUserPassword(user.id, newHash, newSalt);
+      await db.updateUserPassword(user.id, newHash, newSalt);
     }
   }
   if (!isValid) {
@@ -136,10 +136,10 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
   }
 
   const token = generateSessionToken();
-  db.createSession(user.id, token);
-  db.recordUserLogin(user.id);
+  await db.createSession(user.id, token);
+  await db.recordUserLogin(user.id);
 
-  db.recordAuditLog({
+  await db.recordAuditLog({
     userId: user.id,
     userName: user.name,
     userRole: user.role,
@@ -164,12 +164,12 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
   });
 });
 
-apiRouter.post('/auth/logout', authenticate, (req: Request, res: Response) => {
+apiRouter.post('/auth/logout', authenticate, async (req: Request, res: Response) => {
   if (req.token) {
-    db.deleteSession(req.token);
+    await db.deleteSession(req.token);
   }
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -186,23 +186,24 @@ apiRouter.get('/auth/me', authenticate, (req: Request, res: Response) => {
   res.json({ user: req.user });
 });
 
-apiRouter.get('/auth/users', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
-  res.json({ users: db.getAllUsers() });
+apiRouter.get('/auth/users', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
+  const users = await db.getAllUsers();
+  res.json({ users });
 });
 
-apiRouter.patch('/auth/users/:id/role', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
+apiRouter.patch('/auth/users/:id/role', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
   const { role } = req.body;
   if (!role || !['ADMIN', 'ENGINEER', 'VIEWER'].includes(role)) {
     return res.status(400).json({ error: 'Valid role (ADMIN, ENGINEER, VIEWER) is required' });
   }
 
-  const updated = db.updateUserRole(req.params.id, role as UserRole);
+  const updated = await db.updateUserRole(req.params.id, role as UserRole);
   if (!updated) {
     return res.status(404).json({ error: 'User not found' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -217,10 +218,10 @@ apiRouter.patch('/auth/users/:id/role', authenticate, requireRole(['ADMIN']), (r
 });
 
 // --- Services Database Operations ---
-apiRouter.get('/services', authenticate, (req: Request, res: Response) => {
+apiRouter.get('/services', authenticate, async (req: Request, res: Response) => {
   const { page, limit, search, status, tier } = req.query;
   if (page || limit || search || status || tier) {
-    const result = db.getServicesPaginated({
+    const result = await db.getServicesPaginated({
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
       search: typeof search === 'string' ? search : undefined,
@@ -229,19 +230,19 @@ apiRouter.get('/services', authenticate, (req: Request, res: Response) => {
     });
     return res.json(result);
   }
-  const services = db.getAllServices();
+  const services = await db.getAllServices();
   res.json({ services, total: services.length, page: 1, limit: services.length, totalPages: 1 });
 });
 
-apiRouter.get('/services/:id', authenticate, (req: Request, res: Response) => {
-  const service = db.getServiceById(req.params.id);
+apiRouter.get('/services/:id', authenticate, async (req: Request, res: Response) => {
+  const service = await db.getServiceById(req.params.id);
   if (!service) {
     return res.status(404).json({ error: 'Service not found' });
   }
   res.json({ service });
 });
 
-apiRouter.post('/services', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
+apiRouter.post('/services', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
   const validation = validateServiceCreate(req.body);
   if (!validation.valid) {
     return res.status(400).json({ error: validation.errors.join('. ') });
@@ -250,7 +251,7 @@ apiRouter.post('/services', authenticate, requireRole(['ADMIN']), (req: Request,
   const { name, key, tier, description, status, dependencies, ownerTeam, latencyMs, errorRate, uptimePercent, requestRateRps } = req.body;
 
   try {
-    const newService = db.createService({
+    const newService = await db.createService({
       name: sanitizeText(name, 100),
       key: key ? sanitizeText(key, 50) : undefined,
       tier: tier || 'TIER-2',
@@ -265,7 +266,7 @@ apiRouter.post('/services', authenticate, requireRole(['ADMIN']), (req: Request,
     });
 
     if (req.user) {
-      db.recordAuditLog({
+      await db.recordAuditLog({
         userId: req.user.id,
         userName: req.user.name,
         userRole: req.user.role,
@@ -283,19 +284,19 @@ apiRouter.post('/services', authenticate, requireRole(['ADMIN']), (req: Request,
   }
 });
 
-apiRouter.patch('/services/:id', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
+apiRouter.patch('/services/:id', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
   const validation = validateServiceUpdate(req.body);
   if (!validation.valid) {
     return res.status(400).json({ error: validation.errors.join('. ') });
   }
 
-  const updated = db.updateService(req.params.id, req.body);
+  const updated = await db.updateService(req.params.id, req.body);
   if (!updated) {
     return res.status(404).json({ error: 'Service not found' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -309,19 +310,19 @@ apiRouter.patch('/services/:id', authenticate, requireRole(['ADMIN']), (req: Req
   res.json({ service: updated });
 });
 
-apiRouter.delete('/services/:id', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
-  const existing = db.getServiceById(req.params.id);
+apiRouter.delete('/services/:id', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
+  const existing = await db.getServiceById(req.params.id);
   if (!existing) {
     return res.status(404).json({ error: 'Service not found' });
   }
 
-  const deleted = db.deleteService(req.params.id);
+  const deleted = await db.deleteService(req.params.id);
   if (!deleted) {
     return res.status(500).json({ error: 'Failed to delete service' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -335,20 +336,20 @@ apiRouter.delete('/services/:id', authenticate, requireRole(['ADMIN']), (req: Re
   res.json({ success: true, message: `Service ${existing.name} deleted successfully` });
 });
 
-apiRouter.get('/services/:id/metrics', authenticate, (req: Request, res: Response) => {
-  const service = db.getServiceById(req.params.id);
+apiRouter.get('/services/:id/metrics', authenticate, async (req: Request, res: Response) => {
+  const service = await db.getServiceById(req.params.id);
   if (!service) {
     return res.status(404).json({ error: 'Service not found' });
   }
-  const metrics = db.getServiceMetrics(req.params.id);
+  const metrics = await db.getServiceMetrics(req.params.id);
   res.json({ metrics });
 });
 
 // --- Incidents Database Operations ---
-apiRouter.get('/incidents', authenticate, (req: Request, res: Response) => {
+apiRouter.get('/incidents', authenticate, async (req: Request, res: Response) => {
   const { page, limit, search, status, severity, serviceId } = req.query;
   if (page || limit || search || status || severity || serviceId) {
-    const result = db.getIncidentsPaginated({
+    const result = await db.getIncidentsPaginated({
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
       search: typeof search === 'string' ? search : undefined,
@@ -358,33 +359,33 @@ apiRouter.get('/incidents', authenticate, (req: Request, res: Response) => {
     });
     return res.json(result);
   }
-  const incidents = db.getAllIncidents();
+  const incidents = await db.getAllIncidents();
   res.json({ incidents, total: incidents.length, page: 1, limit: incidents.length, totalPages: 1 });
 });
 
-apiRouter.get('/incidents/:id', authenticate, (req: Request, res: Response) => {
-  const incident = db.getIncidentById(req.params.id);
+apiRouter.get('/incidents/:id', authenticate, async (req: Request, res: Response) => {
+  const incident = await db.getIncidentById(req.params.id);
   if (!incident) {
     return res.status(404).json({ error: 'Incident not found' });
   }
   res.json({ incident });
 });
 
-apiRouter.get('/incidents/:id/history', authenticate, (req: Request, res: Response) => {
+apiRouter.get('/incidents/:id/history', authenticate, async (req: Request, res: Response) => {
   const { page, limit } = req.query;
   if (page || limit) {
-    const result = db.getHistoryForIncidentPaginated(req.params.id, {
+    const result = await db.getHistoryForIncidentPaginated(req.params.id, {
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
     });
     return res.json(result);
   }
-  const history = db.getHistoryForIncident(req.params.id);
+  const history = await db.getHistoryForIncident(req.params.id);
   res.json({ history, total: history.length, page: 1, limit: history.length, totalPages: 1 });
 });
 
-apiRouter.get('/incidents/:id/analyses', authenticate, (req: Request, res: Response) => {
-  const analyses = db.getAllAiAnalysesForIncident(req.params.id);
+apiRouter.get('/incidents/:id/analyses', authenticate, async (req: Request, res: Response) => {
+  const analyses = await db.getAllAiAnalysesForIncident(req.params.id);
   res.json({ analyses });
 });
 
@@ -397,13 +398,13 @@ apiRouter.post('/incidents', authenticate, requireRole(['ADMIN', 'ENGINEER']), a
   const { title, description, serviceId, severity, errorLogs, assignedEngineerId, triggerAI } = req.body;
 
   // Verify that target service exists
-  const service = db.getServiceById(serviceId);
+  const service = await db.getServiceById(serviceId);
   if (!service) {
     return res.status(400).json({ error: `Referenced serviceId "${serviceId}" does not exist` });
   }
 
   try {
-    const incident = db.createIncident({
+    const incident = await db.createIncident({
       title: sanitizeText(title, 200),
       description: sanitizeText(description, 1000) || 'Operational anomaly identified.',
       serviceId,
@@ -415,7 +416,7 @@ apiRouter.post('/incidents', authenticate, requireRole(['ADMIN', 'ENGINEER']), a
     });
 
     if (req.user) {
-      db.recordAuditLog({
+      await db.recordAuditLog({
         userId: req.user.id,
         userName: req.user.name,
         userRole: req.user.role,
@@ -427,7 +428,7 @@ apiRouter.post('/incidents', authenticate, requireRole(['ADMIN', 'ENGINEER']), a
     }
 
     // Automatically trigger AI if requested or configured (and not explicitly disabled or test mode)
-    const settings = db.getSettings();
+    const settings = await db.getSettings();
     const isTest = process.env.NODE_ENV === 'test';
     if (triggerAI === true || (!isTest && triggerAI !== false && settings.autoAiAnalysisOnCritical && (severity === 'CRITICAL' || severity === 'HIGH'))) {
       try {
@@ -442,7 +443,7 @@ apiRouter.post('/incidents', authenticate, requireRole(['ADMIN', 'ENGINEER']), a
         });
 
         // Save AI analysis to database
-        db.saveAiAnalysis({
+        await db.saveAiAnalysis({
           incidentId: incident.id,
           modelUsed: aiResult.modelUsed || settings.geminiModel,
           summary: aiResult.incidentSummary || aiResult.rootCauseSummary || 'Incident analyzed',
@@ -462,27 +463,27 @@ apiRouter.post('/incidents', authenticate, requireRole(['ADMIN', 'ENGINEER']), a
       }
     }
 
-    res.status(201).json({ incident: db.getIncidentById(incident.id) });
+    res.status(201).json({ incident: await db.getIncidentById(incident.id) });
   } catch (err: unknown) {
     const msg = sanitizeErrorMessage(err);
     res.status(400).json({ error: msg });
   }
 });
 
-apiRouter.patch('/incidents/:id', authenticate, requireRole(['ADMIN', 'ENGINEER']), (req: Request, res: Response) => {
+apiRouter.patch('/incidents/:id', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
   const validation = validateIncidentUpdate(req.body);
   if (!validation.valid) {
     return res.status(400).json({ error: validation.errors.join('. ') });
   }
 
   const performer = req.user ? { id: req.user.id, name: req.user.name } : undefined;
-  const updated = db.updateIncident(req.params.id, req.body, performer);
+  const updated = await db.updateIncident(req.params.id, req.body, performer);
   if (!updated) {
     return res.status(404).json({ error: 'Incident not found' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -496,19 +497,19 @@ apiRouter.patch('/incidents/:id', authenticate, requireRole(['ADMIN', 'ENGINEER'
   res.json({ incident: updated });
 });
 
-apiRouter.delete('/incidents/:id', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
-  const existing = db.getIncidentById(req.params.id);
+apiRouter.delete('/incidents/:id', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
+  const existing = await db.getIncidentById(req.params.id);
   if (!existing) {
     return res.status(404).json({ error: 'Incident not found' });
   }
 
-  const deleted = db.deleteIncident(req.params.id);
+  const deleted = await db.deleteIncident(req.params.id);
   if (!deleted) {
     return res.status(500).json({ error: 'Failed to delete incident' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -522,25 +523,25 @@ apiRouter.delete('/incidents/:id', authenticate, requireRole(['ADMIN']), (req: R
   res.json({ success: true, message: `Incident ${existing.id} deleted successfully` });
 });
 
-apiRouter.post('/incidents/:id/assign', authenticate, requireRole(['ADMIN', 'ENGINEER']), (req: Request, res: Response) => {
+apiRouter.post('/incidents/:id/assign', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
   const { engineerId } = req.body;
   if (!engineerId) {
     return res.status(400).json({ error: 'engineerId is required' });
   }
 
-  const engineer = db.getEngineerById(engineerId);
+  const engineer = await db.getEngineerById(engineerId);
   if (!engineer) {
     return res.status(404).json({ error: 'Engineer not found' });
   }
 
   const performer = req.user ? { id: req.user.id, name: req.user.name } : undefined;
-  const updated = db.updateIncident(req.params.id, { assignedEngineer: engineer }, performer);
+  const updated = await db.updateIncident(req.params.id, { assignedEngineer: engineer }, performer);
   if (!updated) {
     return res.status(404).json({ error: 'Incident not found' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -554,10 +555,10 @@ apiRouter.post('/incidents/:id/assign', authenticate, requireRole(['ADMIN', 'ENG
   res.json({ incident: updated });
 });
 
-apiRouter.post('/incidents/:id/resolve', authenticate, requireRole(['ADMIN', 'ENGINEER']), (req: Request, res: Response) => {
+apiRouter.post('/incidents/:id/resolve', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
   const { resolutionNotes } = req.body;
   const performer = req.user ? { id: req.user.id, name: req.user.name } : undefined;
-  const updated = db.resolveIncident(
+  const updated = await db.resolveIncident(
     req.params.id,
     resolutionNotes || 'Incident verified and marked resolved by engineer on-call.',
     performer
@@ -568,7 +569,7 @@ apiRouter.post('/incidents/:id/resolve', authenticate, requireRole(['ADMIN', 'EN
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -599,13 +600,13 @@ apiRouter.post('/ai/analyze-incident', authenticate, requireRole(['ADMIN', 'ENGI
 
   try {
     // 1. Gather rich context from database
-    let incident = incidentId ? db.getIncidentById(incidentId) : null;
+    let incident = incidentId ? await db.getIncidentById(incidentId) : null;
     let resolvedService = serviceId
-      ? db.getServiceById(serviceId)
-      : (incident ? db.getServiceById(incident.serviceId) : db.getAllServices().find((s) => s.name === serviceName));
+      ? await db.getServiceById(serviceId)
+      : (incident ? await db.getServiceById(incident.serviceId) : (await db.getAllServices()).find((s) => s.name === serviceName));
 
-    const allMetrics = db.getReliabilityMetrics();
-    const systemIncidents = db.getAllIncidents();
+    const allMetrics = await db.getReliabilityMetrics();
+    const systemIncidents = await db.getAllIncidents();
 
     const finalTitle = title || (incident ? incident.title : 'Unspecified Service Disruption');
     const finalDescription = description || (incident ? incident.description : 'Operational degradation under active investigation.');
@@ -616,7 +617,7 @@ apiRouter.post('/ai/analyze-incident', authenticate, requireRole(['ADMIN', 'ENGI
     // Collect logs
     let finalLogs = errorLogs || (incident ? incident.errorLogs : '');
     if (!finalLogs && resolvedService) {
-      const serviceLogs = db.getLogs({ serviceId: resolvedService.id });
+      const serviceLogs = await db.getLogs({ serviceId: resolvedService.id });
       if (serviceLogs.length > 0) {
         finalLogs = serviceLogs.slice(0, 10).map((l) => `[${l.timestamp}] ${l.level} [${l.serviceName}]: ${l.message}\n${l.stackTrace || ''}`).join('\n');
       }
@@ -646,7 +647,7 @@ apiRouter.post('/ai/analyze-incident', authenticate, requireRole(['ADMIN', 'ENGI
       }));
 
     // 2. Call Gemini server-side AI service
-    const currentSettings = db.getSettings();
+    const currentSettings = await db.getSettings();
     const modelUsed = currentSettings.geminiModel || 'gemini-3.8-flash';
 
     const analysis = await analyzeIncidentWithAI({
@@ -664,7 +665,7 @@ apiRouter.post('/ai/analyze-incident', authenticate, requireRole(['ADMIN', 'ENGI
 
     // 3. Save successful AI analysis to database
     if (incidentId) {
-      const savedAi = db.saveAiAnalysis({
+      const savedAi = await db.saveAiAnalysis({
         incidentId,
         modelUsed: analysis.modelUsed || modelUsed,
         summary: analysis.incidentSummary || analysis.rootCauseSummary || 'Incident analyzed',
@@ -680,7 +681,7 @@ apiRouter.post('/ai/analyze-incident', authenticate, requireRole(['ADMIN', 'ENGI
         analyzedByUserName: req.user?.name,
       });
 
-      incident = db.getIncidentById(incidentId);
+      incident = await db.getIncidentById(incidentId);
 
       res.json({
         analysis: savedAi,
@@ -717,13 +718,14 @@ apiRouter.post('/ai/analyze-incident', authenticate, requireRole(['ADMIN', 'ENGI
 
     console.error(`AI Incident Analysis error [${statusCode}]:`, sanitizeErrorMessage(rawErrorMsg));
 
+    const settingsNow = await db.getSettings();
     res.status(statusCode).json({
       error: safeMessage,
       isHighDemand: is503,
       isRateLimit: is429,
       isTimeout,
       confidenceUnavailable: true,
-      modelUsed: db.getSettings().geminiModel || 'gemini-3.8-flash',
+      modelUsed: settingsNow.geminiModel || 'gemini-3.8-flash',
     });
   }
 });
@@ -733,15 +735,15 @@ apiRouter.post('/ai/analyze-logs', authenticate, requireRole(['ADMIN', 'ENGINEER
 
   try {
     const resolvedService = serviceId
-      ? db.getServiceById(serviceId)
-      : db.getAllServices().find((s) => s.name === serviceName);
+      ? await db.getServiceById(serviceId)
+      : (await db.getAllServices()).find((s) => s.name === serviceName);
 
     const metrics = resolvedService ? {
       latencyMs: resolvedService.latencyMs,
       errorRate: resolvedService.errorRate,
     } : undefined;
 
-    const currentSettings = db.getSettings();
+    const currentSettings = await db.getSettings();
     const modelUsed = currentSettings.geminiModel || 'gemini-3.8-flash';
 
     const analysis = await analyzeLogsWithAI({
@@ -753,7 +755,7 @@ apiRouter.post('/ai/analyze-logs', authenticate, requireRole(['ADMIN', 'ENGINEER
     });
 
     if (req.user) {
-      db.recordAuditLog({
+      await db.recordAuditLog({
         userId: req.user.id,
         userName: req.user.name,
         userRole: req.user.role,
@@ -786,20 +788,21 @@ apiRouter.post('/ai/analyze-logs', authenticate, requireRole(['ADMIN', 'ENGINEER
     }
 
     console.error(`AI Log Analysis error [${statusCode}]:`, sanitizeErrorMessage(rawErrorMsg));
+    const settingsNow = await db.getSettings();
     res.status(statusCode).json({
       error: safeMessage,
       isHighDemand: is503,
       isRateLimit: is429,
       isTimeout,
-      modelUsed: db.getSettings().geminiModel || 'gemini-3.8-flash',
+      modelUsed: settingsNow.geminiModel || 'gemini-3.8-flash',
     });
   }
 });
 
 // --- Telemetry Logs ---
-apiRouter.get('/logs', authenticate, (req: Request, res: Response) => {
+apiRouter.get('/logs', authenticate, async (req: Request, res: Response) => {
   const { serviceId, level, search } = req.query;
-  const logs = db.getLogs({
+  const logs = await db.getLogs({
     serviceId: typeof serviceId === 'string' ? serviceId : undefined,
     level: typeof level === 'string' ? level : undefined,
     search: typeof search === 'string' ? search : undefined,
@@ -807,11 +810,12 @@ apiRouter.get('/logs', authenticate, (req: Request, res: Response) => {
   res.json({ logs });
 });
 
-apiRouter.post('/logs/simulate', authenticate, requireRole(['ADMIN', 'ENGINEER']), (req: Request, res: Response) => {
+apiRouter.post('/logs/simulate', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
   const { serviceId, level, message, stackTrace } = req.body;
-  const service = db.getServiceById(serviceId) || db.getAllServices()[0];
+  const allServices = await db.getAllServices();
+  const service = (serviceId ? await db.getServiceById(serviceId) : null) || allServices[0];
 
-  const newLog = db.addLog({
+  const newLog = await db.addLog({
     serviceId: service.id,
     serviceName: service.name,
     level: level || 'ERROR',
@@ -824,18 +828,19 @@ apiRouter.post('/logs/simulate', authenticate, requireRole(['ADMIN', 'ENGINEER']
 });
 
 // --- Engineers ---
-apiRouter.get('/engineers', authenticate, (req: Request, res: Response) => {
-  res.json({ engineers: db.getAllEngineers() });
+apiRouter.get('/engineers', authenticate, async (req: Request, res: Response) => {
+  const engineers = await db.getAllEngineers();
+  res.json({ engineers });
 });
 
-apiRouter.patch('/engineers/:id', authenticate, requireRole(['ADMIN', 'ENGINEER']), (req: Request, res: Response) => {
-  const updated = db.updateEngineer(req.params.id, req.body);
+apiRouter.patch('/engineers/:id', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
+  const updated = await db.updateEngineer(req.params.id, req.body);
   if (!updated) {
     return res.status(404).json({ error: 'Engineer not found' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -850,20 +855,22 @@ apiRouter.patch('/engineers/:id', authenticate, requireRole(['ADMIN', 'ENGINEER'
 });
 
 // --- Dynamic Dashboard Metrics ---
-apiRouter.get('/metrics', authenticate, (req: Request, res: Response) => {
-  res.json({ metrics: db.getReliabilityMetrics() });
+apiRouter.get('/metrics', authenticate, async (req: Request, res: Response) => {
+  const metrics = await db.getReliabilityMetrics();
+  res.json({ metrics });
 });
 
 // --- Settings ---
-apiRouter.get('/settings', authenticate, (req: Request, res: Response) => {
-  res.json({ settings: db.getSettings() });
+apiRouter.get('/settings', authenticate, async (req: Request, res: Response) => {
+  const settings = await db.getSettings();
+  res.json({ settings });
 });
 
-apiRouter.put('/settings', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
-  const updated = db.updateSettings(req.body);
+apiRouter.put('/settings', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
+  const updated = await db.updateSettings(req.body);
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -877,10 +884,10 @@ apiRouter.put('/settings', authenticate, requireRole(['ADMIN']), (req: Request, 
 });
 
 // --- Audit Logs ---
-apiRouter.get('/audit-logs', authenticate, (req: Request, res: Response) => {
+apiRouter.get('/audit-logs', authenticate, async (req: Request, res: Response) => {
   const { page, limit, search, action, userId } = req.query;
   if (page || search || action || userId) {
-    const result = db.getAuditLogsPaginated({
+    const result = await db.getAuditLogsPaginated({
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : 50,
       search: typeof search === 'string' ? search : undefined,
@@ -890,16 +897,18 @@ apiRouter.get('/audit-logs', authenticate, (req: Request, res: Response) => {
     return res.json(result);
   }
   const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
-  const auditLogs = db.getAuditLogs(isNaN(parsedLimit) ? 50 : parsedLimit);
+  const auditLogs = await db.getAuditLogs(isNaN(parsedLimit) ? 50 : parsedLimit);
   res.json({ auditLogs, total: auditLogs.length, page: 1, limit: isNaN(parsedLimit) ? 50 : parsedLimit, totalPages: 1 });
 });
 
 // --- Seed Reset ---
-apiRouter.post('/reset-seed', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
-  db.ensureInitialData(true);
+apiRouter.post('/reset-seed', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
+  if (db.ensureInitialData) {
+    await db.ensureInitialData(true);
+  }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -909,10 +918,13 @@ apiRouter.post('/reset-seed', authenticate, requireRole(['ADMIN']), (req: Reques
     });
   }
 
+  const allServices = await db.getAllServices();
+  const allIncidents = await db.getAllIncidents();
+
   res.json({
     message: 'System database restored to canonical demo state.',
-    servicesCount: db.getAllServices().length,
-    incidentsCount: db.getAllIncidents().length,
+    servicesCount: allServices.length,
+    incidentsCount: allIncidents.length,
   });
 });
 
@@ -921,11 +933,11 @@ apiRouter.post('/reset-seed', authenticate, requireRole(['ADMIN']), (req: Reques
 // ==========================================
 
 // Full Monitoring Overview (Authenticated: ADMIN, ENGINEER, VIEWER)
-apiRouter.get('/monitoring/overview', authenticate, (req: Request, res: Response) => {
-  const systemHealth = telemetryMonitor.getSystemHealthReport();
+apiRouter.get('/monitoring/overview', authenticate, async (req: Request, res: Response) => {
+  const systemHealth = await telemetryMonitor.getSystemHealthReport();
   const apiPerformance = telemetryMonitor.getApiPerformance();
-  const servicesHealth = db.getServiceHealthDetails();
-  const incidentMonitoring = db.getIncidentMonitoringStats();
+  const servicesHealth = await db.getServiceHealthDetails();
+  const incidentMonitoring = await db.getIncidentMonitoringStats();
 
   res.json({
     systemHealth,
@@ -943,9 +955,9 @@ apiRouter.get('/monitoring/performance', authenticate, (req: Request, res: Respo
 });
 
 // Application Error Monitoring (RBAC: ADMIN, ENGINEER)
-apiRouter.get('/monitoring/errors', authenticate, requireRole(['ADMIN', 'ENGINEER']), (req: Request, res: Response) => {
+apiRouter.get('/monitoring/errors', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
-  const errors = db.getSystemErrors(isNaN(limit) ? 50 : limit);
+  const errors = await db.getSystemErrors(isNaN(limit) ? 50 : limit);
   const recentApiErrors = telemetryMonitor.getApiPerformance().recentErrors;
 
   res.json({
@@ -955,11 +967,11 @@ apiRouter.get('/monitoring/errors', authenticate, requireRole(['ADMIN', 'ENGINEE
 });
 
 // Clear System Errors (RBAC: ADMIN only)
-apiRouter.post('/monitoring/errors/clear', authenticate, requireRole(['ADMIN']), (req: Request, res: Response) => {
-  db.clearSystemErrors();
+apiRouter.post('/monitoring/errors/clear', authenticate, requireRole(['ADMIN']), async (req: Request, res: Response) => {
+  await db.clearSystemErrors();
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -976,11 +988,11 @@ apiRouter.post('/monitoring/errors/clear', authenticate, requireRole(['ADMIN']),
 apiRouter.post('/monitoring/probe', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
   try {
     const aiProbe = await telemetryMonitor.probeGeminiAiHealthLive();
-    const dbHealth = telemetryMonitor.checkDatabaseHealth();
-    const systemReport = telemetryMonitor.getSystemHealthReport();
+    const dbHealth = await telemetryMonitor.checkDatabaseHealth();
+    const systemReport = await telemetryMonitor.getSystemHealthReport();
 
     if (req.user) {
-      db.recordAuditLog({
+      await db.recordAuditLog({
         userId: req.user.id,
         userName: req.user.name,
         userRole: req.user.role,
@@ -1001,14 +1013,14 @@ apiRouter.post('/monitoring/probe', authenticate, requireRole(['ADMIN', 'ENGINEE
 });
 
 // Probe Individual Registered Service (RBAC: ADMIN, ENGINEER)
-apiRouter.post('/monitoring/services/:id/probe', authenticate, requireRole(['ADMIN', 'ENGINEER']), (req: Request, res: Response) => {
-  const updated = db.probeServiceHealth(req.params.id);
+apiRouter.post('/monitoring/services/:id/probe', authenticate, requireRole(['ADMIN', 'ENGINEER']), async (req: Request, res: Response) => {
+  const updated = await db.probeServiceHealth(req.params.id);
   if (!updated) {
     return res.status(404).json({ error: 'Service not found' });
   }
 
   if (req.user) {
-    db.recordAuditLog({
+    await db.recordAuditLog({
       userId: req.user.id,
       userName: req.user.name,
       userRole: req.user.role,
@@ -1033,4 +1045,3 @@ apiRouter.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     code: err.code || (status === 500 ? 'INTERNAL_SERVER_ERROR' : 'REQUEST_ERROR'),
   });
 });
-

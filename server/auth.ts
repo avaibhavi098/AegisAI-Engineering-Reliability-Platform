@@ -52,7 +52,7 @@ export function verifyPassword(password: string, salt: string, storedHash: strin
 /**
  * Express middleware to authenticate requests via Bearer token.
  */
-export function authenticate(req: Request, res: Response, next: NextFunction) {
+export async function authenticate(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({
@@ -69,34 +69,42 @@ export function authenticate(req: Request, res: Response, next: NextFunction) {
     });
   }
 
-  const session = db.getSession(token);
-  if (!session) {
-    return res.status(401).json({
-      error: 'Invalid or expired session. Please log in again.',
-      code: 'INVALID_SESSION',
+  try {
+    const session = await db.getSession(token);
+    if (!session) {
+      return res.status(401).json({
+        error: 'Invalid or expired session. Please log in again.',
+        code: 'INVALID_SESSION',
+      });
+    }
+
+    const storedUser = await db.getUserById(session.userId);
+    if (!storedUser) {
+      return res.status(401).json({
+        error: 'User account not found.',
+        code: 'USER_NOT_FOUND',
+      });
+    }
+
+    req.user = {
+      id: storedUser.id,
+      email: storedUser.email,
+      name: storedUser.name,
+      role: storedUser.role,
+      title: storedUser.title,
+      avatar: storedUser.avatar,
+      createdAt: storedUser.createdAt,
+      lastLoginAt: storedUser.lastLoginAt,
+    };
+    req.token = token;
+    next();
+  } catch (err: unknown) {
+    console.error('Authentication middleware database error:', err);
+    return res.status(500).json({
+      error: 'Authentication service temporarily unavailable.',
+      code: 'AUTH_INTERNAL_ERROR',
     });
   }
-
-  const storedUser = db.getUserById(session.userId);
-  if (!storedUser) {
-    return res.status(401).json({
-      error: 'User account not found.',
-      code: 'USER_NOT_FOUND',
-    });
-  }
-
-  req.user = {
-    id: storedUser.id,
-    email: storedUser.email,
-    name: storedUser.name,
-    role: storedUser.role,
-    title: storedUser.title,
-    avatar: storedUser.avatar,
-    createdAt: storedUser.createdAt,
-    lastLoginAt: storedUser.lastLoginAt,
-  };
-  req.token = token;
-  next();
 }
 
 /**

@@ -41,8 +41,8 @@ test('AI Analysis and Resilient Error Handling Suite', async (t) => {
     await client.close();
   });
 
-  await t.test('Database persistence: saveAiAnalysis stores all 11 required analysis dimensions', () => {
-    const saved = db.saveAiAnalysis({
+  await t.test('Database persistence: saveAiAnalysis stores all 11 required analysis dimensions', async () => {
+    const saved = await db.saveAiAnalysis({
       incidentId: testIncidentId,
       modelUsed: 'gemini-3.8-flash',
       summary: 'WAL receiver buffer saturation due to unindexed batch deletion on primary.',
@@ -81,7 +81,7 @@ test('AI Analysis and Resilient Error Handling Suite', async (t) => {
     assert.ok(saved.generatedAt, 'Must have generated timestamp');
 
     // Verify it is retrievable through getAnalysesForIncident
-    const retrieved = db.getAnalysesForIncident(testIncidentId);
+    const retrieved = await db.getAnalysesForIncident(testIncidentId);
     assert.ok(retrieved.length > 0);
     const found = retrieved.find((a) => a.id === saved.id);
     assert.ok(found);
