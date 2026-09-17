@@ -4,7 +4,7 @@ import path from 'path';
 import { apiRouter } from './server/routes.js';
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json());
 
